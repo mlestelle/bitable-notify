@@ -8,7 +8,10 @@ import json
 import os
 import time
 import requests
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
+
+# 北京时间
+BJT = timezone(timedelta(hours=8))
 
 # 从环境变量读取配置
 APP_ID = os.environ.get("FEISHU_APP_ID")
@@ -127,7 +130,7 @@ def send_feishu(task_name, role, parent_name, downstream, now):
 
 def send_notification(task_name, role, parent_name):
     downstream = DOWNSTREAM.get(role, "相关同事")
-    now = datetime.now().strftime("%H:%M")
+    now = datetime.now(BJT).strftime("%H:%M")
     ok = False
     if DINGTALK_WEBHOOK_URL:
         ok = send_dingtalk(task_name, role, parent_name, downstream, now)
