@@ -13,7 +13,8 @@ from datetime import datetime
 # 从环境变量读取配置
 APP_ID = os.environ.get("FEISHU_APP_ID")
 APP_SECRET = os.environ.get("FEISHU_APP_SECRET")
-WEBHOOK_URL = os.environ.get("FEISHU_WEBHOOK_URL")
+FEISHU_WEBHOOK_URL = os.environ.get("FEISHU_WEBHOOK_URL", "")
+DINGTALK_WEBHOOK_URL = os.environ.get("DINGTALK_WEBHOOK_URL", "")
 APP_TOKEN = os.environ.get("BITABLE_APP_TOKEN")
 TABLE_ID = os.environ.get("BITABLE_TABLE_ID")
 
@@ -71,10 +72,31 @@ def save_notified(notified):
         json.dump(list(notified), f)
 
 
-def send_notification(task_name, role, parent_name):
-    downstream = DOWNSTREAM.get(role, "相关同事")
-    now = datetime.now().strftime("%H:%M")
+def send_dingtalk(task_name, role, parent_name, downstream, now):
+    """发送钉钉群通知"""
+    message = {
+        "msgtype": "markdown",
+        "markdown": {
+            "title": "任务完成通知",
+            "text": (
+                f"### 🔔 任务完成通知\n\n"
+                f"- **📋 任务**：{task_name}\n"
+                f"- **🏷️ 项目**：{parent_name}\n"
+                f"- **👤 岗位**：{role}\n"
+                f"- **✅ 状态**：已完成\n"
+                f"- **📢 下游提醒**：请 **{downstream}** 跟进\n"
+                f"- **🕐 时间**：{now}\n\n"
+                f"[打开表格查看](https://my.feishu.cn/base/{APP_TOKEN})"
+            ),
+        },
+    }
+    resp = requests.post(DINGTALK_WEBHOOK_URL, json=message,
+        headers={"Content-Type": "application/json; charset=utf-8"})
+    return resp.json().get("errcode") == 0
 
+
+def send_feishu(task_name, role, parent_name, downstream, now):
+    """发送飞书群通知"""
     message = {
         "msg_type": "interactive",
         "card": {
@@ -82,43 +104,40 @@ def send_notification(task_name, role, parent_name):
                 "title": {"tag": "plain_text", "content": "🔔 任务完成通知"},
                 "template": "green",
             },
-            "elements": [
-                {
-                    "tag": "div",
-                    "text": {
-                        "tag": "lark_md",
-                        "content": (
-                            f"**📋 任务**：{task_name}\n"
-                            f"**🏷️ 项目**：{parent_name}\n"
-                            f"**👤 岗位**：{role}\n"
-                            f"**✅ 状态**：已完成\n"
-                            f"**📢 下游提醒**：请 **{downstream}** 跟进\n"
-                            f"**🕐 时间**：{now}"
-                        ),
-                    },
+            "elements": [{
+                "tag": "div",
+                "text": {
+                    "tag": "lark_md",
+                    "content": (
+                        f"**📋 任务**：{task_name}\n"
+                        f"**🏷️ 项目**：{parent_name}\n"
+                        f"**👤 岗位**：{role}\n"
+                        f"**✅ 状态**：已完成\n"
+                        f"**📢 下游提醒**：请 **{downstream}** 跟进\n"
+                        f"**🕐 时间**：{now}"
+                    ),
                 },
-                {
-                    "tag": "action",
-                    "actions": [
-                        {
-                            "tag": "button",
-                            "text": {"tag": "plain_text", "content": "打开表格查看"},
-                            "url": f"https://my.feishu.cn/base/{APP_TOKEN}",
-                            "type": "primary",
-                        }
-                    ],
-                },
-            ],
+            }],
         },
     }
-
-    resp = requests.post(WEBHOOK_URL, json=message,
+    resp = requests.post(FEISHU_WEBHOOK_URL, json=message,
         headers={"Content-Type": "application/json; charset=utf-8"})
     return resp.status_code == 200
 
 
+def send_notification(task_name, role, parent_name):
+    downstream = DOWNSTREAM.get(role, "相关同事")
+    now = datetime.now().strftime("%H:%M")
+    ok = False
+    if DINGTALK_WEBHOOK_URL:
+        ok = send_dingtalk(task_name, role, parent_name, downstream, now)
+    if FEISHU_WEBHOOK_URL:
+        ok = send_feishu(task_name, role, parent_name, downstream, now) or ok
+    return ok
+
+
 def main():
-    if not all([APP_ID, APP_SECRET, WEBHOOK_URL, APP_TOKEN, TABLE_ID]):
+    if not all([APP_ID, APP_SECRET, APP_TOKEN, TABLE_ID]) or not any([DINGTALK_WEBHOOK_URL, FEISHU_WEBHOOK_URL]):
         print("❌ 环境变量未设置")
         return
 
