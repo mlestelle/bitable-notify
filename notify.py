@@ -177,7 +177,34 @@ def main():
             time.sleep(0.5)
 
     save_notified(notified)
-    print(f"🎉 完成！发送 {new_count} 条通知")
+    print(f"🎉 通知完成！发送 {new_count} 条通知")
+
+    # === 更新超期状态 ===
+    print("📌 刷新超期状态...")
+    hd = {"Authorization": f"Bearer {token}", "Content-Type": "application/json; charset=utf-8"}
+    today_ms = datetime.now(BJT).timestamp() * 1000
+    overdue_count = 0
+    for r in records:
+        fields = r.get("fields", {})
+        status = fields.get("执行状态", "")
+        end_date = fields.get("计划结束")
+        old_val = fields.get("超期状态", "")
+
+        if status == "已完成":
+            new_val = "✅ 已完成"
+        elif end_date and isinstance(end_date, (int, float)) and end_date < today_ms:
+            new_val = "⚠️ 超期"
+            overdue_count += 1
+        else:
+            new_val = "正常"
+
+        if new_val != old_val:
+            requests.put(
+                f"{BASE_URL}/bitable/v1/apps/{APP_TOKEN}/tables/{TABLE_ID}/records/{r['record_id']}",
+                json={"fields": {"超期状态": new_val}}, headers=hd)
+            time.sleep(0.1)
+
+    print(f"   超期任务: {overdue_count} 条")
 
 
 if __name__ == "__main__":
