@@ -150,6 +150,42 @@ def main():
     rmap = {r["record_id"]: r for r in records}
 
     print(f"📌 检查 {len(records)} 条记录...")
+    hd = {"Authorization": f"Bearer {token}", "Content-Type": "application/json; charset=utf-8"}
+
+    # === 1. 父子任务字段同步 ===
+    print("📌 同步父子任务字段...")
+    sync_count = 0
+    sync_fields = ["当前阶段", "所属迭代", "优先级"]
+    for r in records:
+        fields = r.get("fields", {})
+        parent_links = fields.get("父任务")
+        if not parent_links or not isinstance(parent_links, list):
+            continue
+        parent_id = None
+        for link in parent_links:
+            if isinstance(link, dict) and "record_ids" in link:
+                ids = link["record_ids"]
+                if ids:
+                    parent_id = ids[0]
+                break
+        if not parent_id or parent_id not in rmap:
+            continue
+        parent_fields = rmap[parent_id].get("fields", {})
+        updates = {}
+        for sf in sync_fields:
+            pv = parent_fields.get(sf)
+            cv = fields.get(sf)
+            if pv and pv != cv:
+                updates[sf] = pv
+        if updates:
+            requests.put(
+                f"{BASE_URL}/bitable/v1/apps/{APP_TOKEN}/tables/{TABLE_ID}/records/{r['record_id']}",
+                json={"fields": updates}, headers=hd)
+            sync_count += 1
+            time.sleep(0.1)
+    print(f"   同步了 {sync_count} 条子任务")
+
+    # === 2. 通知检查 ===
     new_count = 0
 
     for r in records:
@@ -179,9 +215,8 @@ def main():
     save_notified(notified)
     print(f"🎉 通知完成！发送 {new_count} 条通知")
 
-    # === 更新超期状态 ===
+    # === 3. 更新超期状态 ===
     print("📌 刷新超期状态...")
-    hd = {"Authorization": f"Bearer {token}", "Content-Type": "application/json; charset=utf-8"}
     today_ms = datetime.now(BJT).timestamp() * 1000
     overdue_count = 0
     for r in records:
