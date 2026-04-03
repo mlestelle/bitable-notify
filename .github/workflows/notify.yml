@@ -1,8 +1,8 @@
 name: Bitable 任务通知
 
 on:
-  schedule:
-    - cron: '*/1 * * * *'  # 每1分钟运行一次（GitHub实际延迟约3-5分钟）
+  repository_dispatch:
+    types: [check-tasks]  # 由外部 cron 服务触发
   workflow_dispatch:  # 支持手动触发
 
 jobs:
