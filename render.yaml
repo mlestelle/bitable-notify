@@ -1,0 +1,24 @@
+services:
+  - type: web
+    name: bitable-notify
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app --bind 0.0.0.0:$PORT
+    envVars:
+      - key: FEISHU_APP_ID
+        sync: false
+      - key: FEISHU_APP_SECRET
+        sync: false
+      - key: FEISHU_WEBHOOK_URL
+        sync: false
+      - key: DINGTALK_WEBHOOK_URL
+        sync: false
+      - key: BITABLE_APP_TOKEN
+        sync: false
+      - key: BITABLE_TABLE_ID
+        sync: false
+      - key: API_TOKEN
+        sync: false
+      - key: PYTHON_VERSION
+        value: "3.11.0"

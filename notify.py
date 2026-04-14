@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-任务状态变更通知（云端版）
-密钥从环境变量读取，适用于 GitHub Actions
+任务状态变更通知（Render 云端版）
+密钥从环境变量读取，通过 Flask HTTP 端点触发
+状态持久化使用飞书多维表格「已通知」字段，无需本地文件
 """
 
-import json
 import os
 import time
 import requests
@@ -32,9 +32,6 @@ DOWNSTREAM = {
     "数据产品": "策划/研发负责人",
 }
 
-# GitHub Actions 中用文件保存状态（会被 cache 持久化）
-STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "notified_tasks.json")
-
 
 def get_token():
     resp = requests.post(f"{BASE_URL}/auth/v3/tenant_access_token/internal",
@@ -61,18 +58,6 @@ def get_all_records(token):
             break
         page_token = data["data"]["page_token"]
     return records
-
-
-def load_notified():
-    if os.path.exists(STATE_FILE):
-        with open(STATE_FILE, "r") as f:
-            return set(json.load(f))
-    return set()
-
-
-def save_notified(notified):
-    with open(STATE_FILE, "w") as f:
-        json.dump(list(notified), f)
 
 
 def send_dingtalk(task_name, role, parent_name, downstream, now):
@@ -140,20 +125,22 @@ def send_notification(task_name, role, parent_name):
 
 
 def main():
+    """主逻辑，返回执行结果字典"""
+    result = {"ok": False, "sync": 0, "notified": 0, "overdue": 0, "total": 0, "logs": []}
+
     if not all([APP_ID, APP_SECRET, APP_TOKEN, TABLE_ID]) or not any([DINGTALK_WEBHOOK_URL, FEISHU_WEBHOOK_URL]):
-        print("❌ 环境变量未设置")
-        return
+        result["error"] = "环境变量未设置"
+        return result
 
     token = get_token()
     records = get_all_records(token)
-    notified = load_notified()
     rmap = {r["record_id"]: r for r in records}
+    result["total"] = len(records)
+    result["logs"].append(f"📌 检查 {len(records)} 条记录...")
 
-    print(f"📌 检查 {len(records)} 条记录...")
     hd = {"Authorization": f"Bearer {token}", "Content-Type": "application/json; charset=utf-8"}
 
     # === 1. 父子任务字段同步 ===
-    print("📌 同步父子任务字段...")
     sync_count = 0
     sync_fields = ["当前阶段", "所属迭代", "优先级"]
     for r in records:
@@ -183,9 +170,10 @@ def main():
                 json={"fields": updates}, headers=hd)
             sync_count += 1
             time.sleep(0.1)
-    print(f"   同步了 {sync_count} 条子任务")
+    result["sync"] = sync_count
+    result["logs"].append(f"   同步了 {sync_count} 条子任务")
 
-    # === 2. 通知检查 ===
+    # === 2. 通知检查（使用 Bitable「已通知」字段判断） ===
     new_count = 0
 
     for r in records:
@@ -194,8 +182,10 @@ def main():
         status = fields.get("执行状态", "")
         task_name = fields.get("任务名称", "?")
         role = fields.get("岗位类型", "?")
+        already_notified = fields.get("已通知", "")
 
-        if status == "已完成" and rid not in notified:
+        # 只通知「已完成」且「未通知」的任务
+        if status == "已完成" and already_notified != "是":
             parent_name = "—"
             parent_links = fields.get("父任务", [])
             if parent_links and isinstance(parent_links, list):
@@ -207,16 +197,18 @@ def main():
                         break
 
             if send_notification(task_name, role, parent_name):
-                notified.add(rid)
+                # 通知成功后，回写「已通知」字段到 Bitable
+                requests.put(
+                    f"{BASE_URL}/bitable/v1/apps/{APP_TOKEN}/tables/{TABLE_ID}/records/{rid}",
+                    json={"fields": {"已通知": "是"}}, headers=hd)
                 new_count += 1
-                print(f"   🔔 {task_name} ({role}) → 已通知")
+                result["logs"].append(f"   🔔 {task_name} ({role}) → 已通知")
             time.sleep(0.5)
 
-    save_notified(notified)
-    print(f"🎉 通知完成！发送 {new_count} 条通知")
+    result["notified"] = new_count
+    result["logs"].append(f"🎉 通知完成！发送 {new_count} 条通知")
 
     # === 3. 更新超期状态 ===
-    print("📌 刷新超期状态...")
     today_ms = datetime.now(BJT).timestamp() * 1000
     overdue_count = 0
     for r in records:
@@ -239,8 +231,13 @@ def main():
                 json={"fields": {"超期状态": new_val}}, headers=hd)
             time.sleep(0.1)
 
-    print(f"   超期任务: {overdue_count} 条")
+    result["overdue"] = overdue_count
+    result["logs"].append(f"   超期任务: {overdue_count} 条")
+    result["ok"] = True
+    return result
 
 
 if __name__ == "__main__":
-    main()
+    r = main()
+    for log in r.get("logs", []):
+        print(log)
