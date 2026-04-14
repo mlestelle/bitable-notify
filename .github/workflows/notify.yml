@@ -1,9 +1,17 @@
-name: Bitable 任务通知
+# ⚠️ 已废弃：服务已迁移到 Render 平台，此 workflow 不再使用
+# 如需恢复，删除下方 on 中的注释
+name: Bitable 任务通知（已停用）
 
 on:
-  repository_dispatch:
-    types: [check-tasks]  # 由 cron-job.org 每6分钟触发（工作日 9:00-18:00）
-  workflow_dispatch:  # 支持手动触发
+  # repository_dispatch:
+  #   types: [check-tasks]
+  # workflow_dispatch:
+  workflow_dispatch:  # 仅保留手动触发用于调试
+    inputs:
+      debug:
+        description: '调试模式'
+        required: false
+        default: 'false'
 
 jobs:
   notify:
