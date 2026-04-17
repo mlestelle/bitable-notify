@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """
-任务状态变更通知（Render 云端版）
-密钥从环境变量读取，通过 Flask HTTP 端点触发
-状态持久化使用飞书多维表格「已通知」字段，无需本地文件
+任务状态变更通知 v2
+- 按「当前阶段」决定通知下游（而非岗位类型）
+- 钉钉群 @具体负责人（手机号）
+- 状态持久化使用飞书多维表格「已通知」字段
 """
 
 import os
@@ -16,21 +17,87 @@ BJT = timezone(timedelta(hours=8))
 # 从环境变量读取配置
 APP_ID = os.environ.get("FEISHU_APP_ID")
 APP_SECRET = os.environ.get("FEISHU_APP_SECRET")
-FEISHU_WEBHOOK_URL = os.environ.get("FEISHU_WEBHOOK_URL", "")
 DINGTALK_WEBHOOK_URL = os.environ.get("DINGTALK_WEBHOOK_URL", "")
 APP_TOKEN = os.environ.get("BITABLE_APP_TOKEN")
 TABLE_ID = os.environ.get("BITABLE_TABLE_ID")
 
 BASE_URL = "https://open.feishu.cn/open-apis"
 
-DOWNSTREAM = {
-    "策划": "原画/动画",
-    "原画": "动画/开发",
-    "动画": "开发",
-    "开发": "测试",
-    "测试": "数据产品",
-    "数据产品": "策划/研发负责人",
+# ===== 团队成员：姓名 → 手机号 =====
+NAME_TO_PHONE = {
+    "陈忠强": "15908118897",
+    "贺敏洪": "13700951014",
+    "张凯悦": "15328230564",
+    "李睿":   "18382025882",
+    "韩雷":   "18980753038",
+    "卢鸿泽": "15284770530",
+    "文媛萌": "19981590240",
+    "丁加州": "13684097528",
+    "艾涛胜": "18482365438",
+    "张晓函": "13971607982",
 }
+
+# ===== 阶段完成后的通知配置 =====
+# downstream_roles: 需要 @的下游岗位类型列表
+# notify_self: 是否通知当前任务负责人自己
+# message: 通知文案
+STAGE_NOTIFY = {
+    "策划初案": {
+        "downstream_roles": [],
+        "notify_self": True,
+        "message": "📋 初案已完成（老板审阅通过），请继续完善为完整策划案",
+    },
+    "策划定稿": {
+        "downstream_roles": ["原画", "动画", "开发"],
+        "notify_self": False,
+        "message": "🎨 策划案已定稿，请准备评审",
+    },
+    "开发评审": {
+        "downstream_roles": ["开发"],
+        "notify_self": False,
+        "message": "📐 开发评审完成，请进行工时评估",
+    },
+    "工时评估": {
+        "downstream_roles": ["开发"],
+        "notify_self": False,
+        "message": "⏱️ 工时确认，开始开发",
+    },
+    "开发中": {
+        "downstream_roles": ["测试"],
+        "notify_self": False,
+        "message": "🔧 开发完成，进入联调",
+    },
+    "开发联调": {
+        "downstream_roles": ["测试"],
+        "notify_self": False,
+        "message": "🔗 联调完成，请测试介入",
+    },
+    "功能测试": {
+        "downstream_roles": ["数据产品", "测试"],
+        "notify_self": False,
+        "message": "🧪 功能测试通过，数据产品安排难度测试，测试进行体验测试",
+    },
+    "难度&体验测试": {
+        "downstream_roles": ["开发", "策划"],
+        "notify_self": False,
+        "message": "✅ 体验测试通过，准备上线",
+    },
+    "待上线": {
+        "downstream_roles": [],
+        "notify_self": False,
+        "at_all": True,
+        "message": "🚀 已进入待上线状态",
+    },
+    "已上线": {
+        "downstream_roles": [],
+        "notify_self": False,
+        "at_all": True,
+        "message": "🎉 已成功上线！",
+    },
+}
+
+# 父子任务字段同步列表
+SYNC_FIELDS = ["当前阶段", "所属迭代", "优先级", "任务类型"]
 
 
 def get_token():
@@ -60,75 +127,82 @@ def get_all_records(token):
     return records
 
 
-def send_dingtalk(task_name, role, parent_name, downstream, now):
-    """发送钉钉群通知"""
-    message = {
+def get_parent_id(fields):
+    """从子任务的 fields 中提取父任务 record_id"""
+    parent_links = fields.get("父任务")
+    if not parent_links or not isinstance(parent_links, list):
+        return None
+    for link in parent_links:
+        if isinstance(link, dict) and "record_ids" in link:
+            ids = link["record_ids"]
+            if ids:
+                return ids[0]
+    return None
+
+
+def find_downstream_people(records, rmap, parent_id, downstream_roles):
+    """
+    在同一父任务下，找到指定岗位类型的子任务负责人
+    返回 [(姓名, 手机号), ...]
+    """
+    people = []
+    seen = set()
+    for r in records:
+        fields = r.get("fields", {})
+        pid = get_parent_id(fields)
+        if pid != parent_id:
+            continue
+        role = fields.get("岗位类型", "")
+        name = fields.get("负责人", "")
+        if role in downstream_roles and name and name not in seen:
+            seen.add(name)
+            phone = NAME_TO_PHONE.get(name, "")
+            people.append((name, phone))
+    return people
+
+
+def send_dingtalk(task_name, stage, parent_name, message, people, at_all=False):
+    """发送钉钉群通知，@具体的人"""
+    if not DINGTALK_WEBHOOK_URL:
+        return False
+
+    # 构造 @人文本
+    at_mobiles = [p[1] for p in people if p[1]]
+    at_text = ""
+    if people:
+        at_names = " ".join([f"@{p[0]}" for p in people])
+        at_text = f"\n- **📢 请跟进**：{at_names}"
+
+    text = (
+        f"### 🔔 任务阶段完成通知\n\n"
+        f"- **🏷️ 项目**：{parent_name}\n"
+        f"- **📋 任务**：{task_name}\n"
+        f"- **📍 阶段**：{stage} ✅\n"
+        f"- **💬 说明**：{message}"
+        f"{at_text}\n"
+        f"- **🕐 时间**：{datetime.now(BJT).strftime('%H:%M')}\n\n"
+        f"[打开表格查看](https://my.feishu.cn/base/{APP_TOKEN})"
+    )
+
+    payload = {
         "msgtype": "markdown",
-        "markdown": {
-            "title": "任务完成通知",
-            "text": (
-                f"### 🔔 任务完成通知\n\n"
-                f"- **📋 任务**：{task_name}\n"
-                f"- **🏷️ 项目**：{parent_name}\n"
-                f"- **👤 岗位**：{role}\n"
-                f"- **✅ 状态**：已完成\n"
-                f"- **📢 下游提醒**：请 **{downstream}** 跟进\n"
-                f"- **🕐 时间**：{now}\n\n"
-                f"[打开表格查看](https://my.feishu.cn/base/{APP_TOKEN})"
-            ),
+        "markdown": {"title": "任务完成通知", "text": text},
+        "at": {
+            "atMobiles": at_mobiles,
+            "isAtAll": at_all,
         },
     }
-    resp = requests.post(DINGTALK_WEBHOOK_URL, json=message,
+
+    resp = requests.post(DINGTALK_WEBHOOK_URL, json=payload,
         headers={"Content-Type": "application/json; charset=utf-8"})
     return resp.json().get("errcode") == 0
-
-
-def send_feishu(task_name, role, parent_name, downstream, now):
-    """发送飞书群通知"""
-    message = {
-        "msg_type": "interactive",
-        "card": {
-            "header": {
-                "title": {"tag": "plain_text", "content": "🔔 任务完成通知"},
-                "template": "green",
-            },
-            "elements": [{
-                "tag": "div",
-                "text": {
-                    "tag": "lark_md",
-                    "content": (
-                        f"**📋 任务**：{task_name}\n"
-                        f"**🏷️ 项目**：{parent_name}\n"
-                        f"**👤 岗位**：{role}\n"
-                        f"**✅ 状态**：已完成\n"
-                        f"**📢 下游提醒**：请 **{downstream}** 跟进\n"
-                        f"**🕐 时间**：{now}"
-                    ),
-                },
-            }],
-        },
-    }
-    resp = requests.post(FEISHU_WEBHOOK_URL, json=message,
-        headers={"Content-Type": "application/json; charset=utf-8"})
-    return resp.status_code == 200
-
-
-def send_notification(task_name, role, parent_name):
-    downstream = DOWNSTREAM.get(role, "相关同事")
-    now = datetime.now(BJT).strftime("%H:%M")
-    ok = False
-    if DINGTALK_WEBHOOK_URL:
-        ok = send_dingtalk(task_name, role, parent_name, downstream, now)
-    if FEISHU_WEBHOOK_URL:
-        ok = send_feishu(task_name, role, parent_name, downstream, now) or ok
-    return ok
 
 
 def main():
     """主逻辑，返回执行结果字典"""
     result = {"ok": False, "sync": 0, "notified": 0, "overdue": 0, "total": 0, "logs": []}
 
-    if not all([APP_ID, APP_SECRET, APP_TOKEN, TABLE_ID]) or not any([DINGTALK_WEBHOOK_URL, FEISHU_WEBHOOK_URL]):
+    if not all([APP_ID, APP_SECRET, APP_TOKEN, TABLE_ID, DINGTALK_WEBHOOK_URL]):
         result["error"] = "环境变量未设置"
         return result
 
@@ -142,24 +216,14 @@ def main():
 
     # === 1. 父子任务字段同步 ===
     sync_count = 0
-    sync_fields = ["当前阶段", "所属迭代", "优先级", "任务类型"]
     for r in records:
         fields = r.get("fields", {})
-        parent_links = fields.get("父任务")
-        if not parent_links or not isinstance(parent_links, list):
-            continue
-        parent_id = None
-        for link in parent_links:
-            if isinstance(link, dict) and "record_ids" in link:
-                ids = link["record_ids"]
-                if ids:
-                    parent_id = ids[0]
-                break
+        parent_id = get_parent_id(fields)
         if not parent_id or parent_id not in rmap:
             continue
         parent_fields = rmap[parent_id].get("fields", {})
         updates = {}
-        for sf in sync_fields:
+        for sf in SYNC_FIELDS:
             pv = parent_fields.get(sf)
             cv = fields.get(sf)
             if pv and pv != cv:
@@ -173,50 +237,68 @@ def main():
     result["sync"] = sync_count
     result["logs"].append(f"   同步了 {sync_count} 条子任务")
 
-    # === 2. 通知检查（使用 Bitable「已通知」字段判断） ===
+    # === 2. 通知检查 ===
     new_count = 0
-
     for r in records:
         rid = r["record_id"]
         fields = r.get("fields", {})
         status = fields.get("执行状态", "")
+        stage = fields.get("当前阶段", "")
         task_name = fields.get("任务名称", "?")
-        role = fields.get("岗位类型", "?")
         already_notified = fields.get("已通知", "")
 
         # 只通知「已完成」且「未通知」的任务
-        if status == "已完成" and already_notified != "是":
-            parent_name = "—"
-            parent_links = fields.get("父任务", [])
-            if parent_links and isinstance(parent_links, list):
-                for link in parent_links:
-                    if isinstance(link, dict) and "record_ids" in link:
-                        pid = link["record_ids"][0] if link["record_ids"] else None
-                        if pid and pid in rmap:
-                            parent_name = rmap[pid].get("fields", {}).get("任务名称", "—")
-                        break
+        if status != "已完成" or already_notified == "是":
+            continue
 
-            # 先标记「已通知」，防止并发运行重复发送
+        # 该阶段是否有通知配置
+        notify_config = STAGE_NOTIFY.get(stage)
+        if not notify_config:
+            continue
+
+        # 找父任务名称
+        parent_id = get_parent_id(fields)
+        parent_name = "—"
+        if parent_id and parent_id in rmap:
+            parent_name = rmap[parent_id].get("fields", {}).get("任务名称", "—")
+
+        # 找需要 @的人
+        people = []
+        if notify_config.get("notify_self"):
+            # 通知自己
+            self_name = fields.get("负责人", "")
+            if self_name:
+                phone = NAME_TO_PHONE.get(self_name, "")
+                people.append((self_name, phone))
+        if notify_config.get("downstream_roles") and parent_id:
+            # 找同一父任务下的下游负责人
+            downstream = find_downstream_people(
+                records, rmap, parent_id, notify_config["downstream_roles"])
+            people.extend(downstream)
+
+        at_all = notify_config.get("at_all", False)
+
+        # 先标记「已通知」，防止并发运行重复发送
+        requests.put(
+            f"{BASE_URL}/bitable/v1/apps/{APP_TOKEN}/tables/{TABLE_ID}/records/{rid}",
+            json={"fields": {"已通知": "是"}}, headers=hd)
+        time.sleep(0.3)
+
+        if send_dingtalk(task_name, stage, parent_name, notify_config["message"], people, at_all):
+            new_count += 1
+            at_names = ", ".join([p[0] for p in people]) if people else ("全员" if at_all else "无")
+            result["logs"].append(f"   🔔 {task_name} [{stage}] → @{at_names}")
+        else:
+            # 发送失败，回滚标记
             requests.put(
                 f"{BASE_URL}/bitable/v1/apps/{APP_TOKEN}/tables/{TABLE_ID}/records/{rid}",
-                json={"fields": {"已通知": "是"}}, headers=hd)
-            time.sleep(0.3)
-
-            if send_notification(task_name, role, parent_name):
-                new_count += 1
-                result["logs"].append(f"   🔔 {task_name} ({role}) → 已通知")
-            else:
-                # 发送失败，回滚标记，下次重试
-                requests.put(
-                    f"{BASE_URL}/bitable/v1/apps/{APP_TOKEN}/tables/{TABLE_ID}/records/{rid}",
-                    json={"fields": {"已通知": ""}}, headers=hd)
-                result["logs"].append(f"   ❌ {task_name} ({role}) → 发送失败，已回滚")
+                json={"fields": {"已通知": ""}}, headers=hd)
+            result["logs"].append(f"   ❌ {task_name} [{stage}] → 发送失败，已回滚")
 
     result["notified"] = new_count
     result["logs"].append(f"🎉 通知完成！发送 {new_count} 条通知")
 
     # === 3. 更新超期状态 ===
-    # 用今天零点比较，截止日期当天不算超期
     today_start = datetime.now(BJT).replace(hour=0, minute=0, second=0, microsecond=0)
     today_ms = today_start.timestamp() * 1000
     overdue_count = 0
