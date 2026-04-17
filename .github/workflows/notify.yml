@@ -1,17 +1,9 @@
-# ⚠️ 已废弃：服务已迁移到 Render 平台，此 workflow 不再使用
-# 如需恢复，删除下方 on 中的注释
-name: Bitable 任务通知（已停用）
+name: Bitable 任务通知
 
 on:
-  # repository_dispatch:
-  #   types: [check-tasks]
-  # workflow_dispatch:
-  workflow_dispatch:  # 仅保留手动触发用于调试
-    inputs:
-      debug:
-        description: '调试模式'
-        required: false
-        default: 'false'
+  repository_dispatch:
+    types: [check-tasks]
+  workflow_dispatch:
 
 jobs:
   notify:
@@ -27,14 +19,7 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
-
-      - name: Restore notified cache
-        uses: actions/cache@v4
-        with:
-          path: notified_tasks.json
-          key: notified-tasks-${{ github.run_id }}
-          restore-keys: notified-tasks-
+        run: pip install requests
 
       - name: Run notification check
         env:
