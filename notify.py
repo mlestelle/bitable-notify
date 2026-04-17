@@ -161,7 +161,8 @@ def send_dingtalk(task_name, stage, parent_name, message, people, at_all=False):
     at_mobiles = [p[1] for p in people if p[1]]
     at_text = ""
     if people:
-        at_names = " ".join([f"@{p[0]}" for p in people])
+        # 钉钉 markdown 必须在文本中包含 @手机号 才能触发强提醒
+        at_names = " ".join([f"{p[0]} @{p[1]}" for p in people if p[1]])
         at_text = f"\n- **📢 请跟进**：{at_names}"
 
     text = (
