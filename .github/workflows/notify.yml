@@ -30,4 +30,5 @@ jobs:
           DINGTALK_WEBHOOK_URL: ${{ secrets.DINGTALK_WEBHOOK_URL }}
           BITABLE_APP_TOKEN: ${{ secrets.BITABLE_APP_TOKEN }}
           BITABLE_TABLE_ID: ${{ secrets.BITABLE_TABLE_ID }}
+          NAME_PHONE_MAP: ${{ secrets.NAME_PHONE_MAP }}
         run: python notify.py

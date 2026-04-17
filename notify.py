@@ -7,6 +7,7 @@
 """
 
 import os
+import json
 import time
 import requests
 from datetime import datetime, timezone, timedelta
@@ -23,19 +24,9 @@ TABLE_ID = os.environ.get("BITABLE_TABLE_ID")
 
 BASE_URL = "https://open.feishu.cn/open-apis"
 
-# ===== 团队成员：姓名 → 手机号 =====
-NAME_TO_PHONE = {
-    "陈忠强": "15908118897",
-    "贺敏洪": "13700951014",
-    "张凯悦": "15328230564",
-    "李睿":   "18382025882",
-    "韩雷":   "18980753038",
-    "卢鸿泽": "15284770530",
-    "文媛萌": "19981590240",
-    "丁加州": "13684097528",
-    "艾涛胜": "18482365438",
-    "张晓函": "13971607982",
-}
+# ===== 团队成员：姓名 → 手机号（从环境变量读取 JSON） =====
+# 格式: {"陈忠强":"15908118897","贺敏洪":"13700951014",...}
+NAME_TO_PHONE = json.loads(os.environ.get("NAME_PHONE_MAP", "{}"))
 
 # ===== 阶段完成后的通知配置 =====
 # downstream_roles: 需要 @的下游岗位类型列表

@@ -1,0 +1,5 @@
+游戏部人员信息表.xlsx
+*.xlsx
+__pycache__/
+*.pyc
+.env
