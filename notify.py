@@ -196,14 +196,21 @@ def main():
                             parent_name = rmap[pid].get("fields", {}).get("任务名称", "—")
                         break
 
+            # 先标记「已通知」，防止并发运行重复发送
+            requests.put(
+                f"{BASE_URL}/bitable/v1/apps/{APP_TOKEN}/tables/{TABLE_ID}/records/{rid}",
+                json={"fields": {"已通知": "是"}}, headers=hd)
+            time.sleep(0.3)
+
             if send_notification(task_name, role, parent_name):
-                # 通知成功后，回写「已通知」字段到 Bitable
-                requests.put(
-                    f"{BASE_URL}/bitable/v1/apps/{APP_TOKEN}/tables/{TABLE_ID}/records/{rid}",
-                    json={"fields": {"已通知": "是"}}, headers=hd)
                 new_count += 1
                 result["logs"].append(f"   🔔 {task_name} ({role}) → 已通知")
-            time.sleep(0.5)
+            else:
+                # 发送失败，回滚标记，下次重试
+                requests.put(
+                    f"{BASE_URL}/bitable/v1/apps/{APP_TOKEN}/tables/{TABLE_ID}/records/{rid}",
+                    json={"fields": {"已通知": ""}}, headers=hd)
+                result["logs"].append(f"   ❌ {task_name} ({role}) → 发送失败，已回滚")
 
     result["notified"] = new_count
     result["logs"].append(f"🎉 通知完成！发送 {new_count} 条通知")
