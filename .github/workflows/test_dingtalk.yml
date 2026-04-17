@@ -1,0 +1,19 @@
+name: 测试钉钉通知
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install requests
+      - name: Test DingTalk notification
+        env:
+          DINGTALK_WEBHOOK_URL: ${{ secrets.DINGTALK_WEBHOOK_URL }}
+          NAME_PHONE_MAP: ${{ secrets.NAME_PHONE_MAP }}
+        run: python test_dingtalk.py
