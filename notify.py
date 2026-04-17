@@ -142,7 +142,7 @@ def main():
 
     # === 1. 父子任务字段同步 ===
     sync_count = 0
-    sync_fields = ["当前阶段", "所属迭代", "优先级"]
+    sync_fields = ["当前阶段", "所属迭代", "优先级", "任务类型"]
     for r in records:
         fields = r.get("fields", {})
         parent_links = fields.get("父任务")
@@ -209,7 +209,9 @@ def main():
     result["logs"].append(f"🎉 通知完成！发送 {new_count} 条通知")
 
     # === 3. 更新超期状态 ===
-    today_ms = datetime.now(BJT).timestamp() * 1000
+    # 用今天零点比较，截止日期当天不算超期
+    today_start = datetime.now(BJT).replace(hour=0, minute=0, second=0, microsecond=0)
+    today_ms = today_start.timestamp() * 1000
     overdue_count = 0
     for r in records:
         fields = r.get("fields", {})
