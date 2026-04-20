@@ -220,6 +220,7 @@ def main():
             cv = fields.get(sf)
             if pv and pv != cv:
                 updates[sf] = pv
+                fields[sf] = pv  # 更新内存里的值，以便后续步骤正确读取
         if updates:
             requests.put(
                 f"{BASE_URL}/bitable/v1/apps/{APP_TOKEN}/tables/{TABLE_ID}/records/{r['record_id']}",
