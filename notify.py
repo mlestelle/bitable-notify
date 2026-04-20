@@ -32,59 +32,16 @@ NAME_TO_PHONE = json.loads(os.environ.get("NAME_PHONE_MAP", "{}"))
 # downstream_roles: 需要 @的下游岗位类型列表
 # notify_self: 是否通知当前任务负责人自己
 # message: 通知文案
-STAGE_NOTIFY = {
-    "策划初案": {
-        "downstream_roles": [],
-        "notify_self": True,
-        "message": "📋 初案已完成（老板审阅通过），请继续完善为完整策划案",
-    },
-    "策划定稿": {
-        "downstream_roles": ["原画", "动画", "开发"],
-        "notify_self": False,
-        "message": "🎨 策划案已定稿，请准备评审",
-    },
-    "开发评审": {
-        "downstream_roles": ["开发"],
-        "notify_self": False,
-        "message": "📐 开发评审完成，请进行工时评估",
-    },
-    "工时评估": {
-        "downstream_roles": ["开发"],
-        "notify_self": False,
-        "message": "⏱️ 工时确认，开始开发",
-    },
-    "开发中": {
-        "downstream_roles": ["测试"],
-        "notify_self": False,
-        "message": "🔧 开发完成，进入联调",
-    },
-    "开发联调": {
-        "downstream_roles": ["测试"],
-        "notify_self": False,
-        "message": "🔗 联调完成，请测试介入",
-    },
-    "功能测试": {
-        "downstream_roles": ["数据产品", "测试"],
-        "notify_self": False,
-        "message": "🧪 功能测试通过，数据产品安排难度测试，测试进行体验测试",
-    },
-    "难度&体验测试": {
-        "downstream_roles": ["开发", "策划"],
-        "notify_self": False,
-        "message": "✅ 体验测试通过，准备上线",
-    },
-    "待上线": {
-        "downstream_roles": [],
-        "notify_self": False,
-        "at_all": True,
-        "message": "🚀 已进入待上线状态",
-    },
-    "已上线": {
-        "downstream_roles": [],
-        "notify_self": False,
-        "at_all": True,
-        "message": "🎉 已成功上线！",
-    },
+
+
+# ===== 岗位完成后的提醒配置 =====
+ROLE_NOTIFY = {
+    "策划": {"downstream": ["原画", "动画", "开发"], "message": "📋 策划已完成，请下游跟进"},
+    "原画": {"downstream": ["动画", "开发"], "message": "🎨 原画已完成"},
+    "动画": {"downstream": ["开发"], "message": "🏃 动画已完成"},
+    "开发": {"downstream": ["测试"], "message": "🔧 开发完成，请测试介入"},
+    "测试": {"downstream": ["数据产品"], "message": "🧪 测试通过，请数据产品验收"},
+    "数据产品": {"downstream": ["策划"], "message": "✅ 数据反馈已完成，请策划处理"},
 }
 
 # 父子任务字段同步列表
@@ -152,7 +109,7 @@ def find_downstream_people(records, rmap, parent_id, downstream_roles):
     return people
 
 
-def send_dingtalk(task_name, stage, parent_name, message, people, at_all=False):
+def send_dingtalk(task_name, role, parent_name, message, people, at_all=False):
     """发送钉钉群通知，@具体的人"""
     if not DINGTALK_WEBHOOK_URL:
         return False
@@ -169,7 +126,7 @@ def send_dingtalk(task_name, stage, parent_name, message, people, at_all=False):
         f"### 🔔 任务阶段完成通知\n\n"
         f"- **🏷️ 项目**：{parent_name}\n"
         f"- **📋 任务**：{task_name}\n"
-        f"- **📍 阶段**：{stage} ✅\n"
+        f"- **👤 岗位**：{role} ✅\n"
         f"- **💬 说明**：{message}"
         f"{at_text}\n"
         f"- **🕐 时间**：{datetime.now(BJT).strftime('%H:%M')}\n\n"
@@ -244,8 +201,9 @@ def main():
         if status != "已完成" or already_notified == "是":
             continue
 
-        # 该阶段是否有通知配置
-        notify_config = STAGE_NOTIFY.get(stage)
+        role = fields.get("岗位类型", "")
+        # 获取该岗位的下游配置
+        notify_config = ROLE_NOTIFY.get(role)
         if not notify_config:
             continue
 
@@ -257,19 +215,19 @@ def main():
 
         # 找需要 @的人
         people = []
-        if notify_config.get("notify_self"):
+        if False:
             # 通知自己
             self_name = fields.get("负责人", "")
             if self_name:
                 phone = NAME_TO_PHONE.get(self_name, "")
                 people.append((self_name, phone))
-        if notify_config.get("downstream_roles") and parent_id:
+        if notify_config.get("downstream") and parent_id:
             # 找同一父任务下的下游负责人
             downstream = find_downstream_people(
-                records, rmap, parent_id, notify_config["downstream_roles"])
+                records, rmap, parent_id, notify_config["downstream"])
             people.extend(downstream)
 
-        at_all = notify_config.get("at_all", False)
+        at_all = False
 
         # 先标记「已通知」，防止并发运行重复发送
         requests.put(
@@ -277,16 +235,16 @@ def main():
             json={"fields": {"已通知": "是"}}, headers=hd)
         time.sleep(0.3)
 
-        if send_dingtalk(task_name, stage, parent_name, notify_config["message"], people, at_all):
+        if send_dingtalk(task_name, role, parent_name, notify_config["message"], people, at_all):
             new_count += 1
             at_names = ", ".join([p[0] for p in people]) if people else ("全员" if at_all else "无")
-            result["logs"].append(f"   🔔 {task_name} [{stage}] → @{at_names}")
+            result["logs"].append(f"   🔔 {task_name} [{role}] → @{at_names}")
         else:
             # 发送失败，回滚标记
             requests.put(
                 f"{BASE_URL}/bitable/v1/apps/{APP_TOKEN}/tables/{TABLE_ID}/records/{rid}",
                 json={"fields": {"已通知": ""}}, headers=hd)
-            result["logs"].append(f"   ❌ {task_name} [{stage}] → 发送失败，已回滚")
+            result["logs"].append(f"   ❌ {task_name} [{role}] → 发送失败，已回滚")
 
     result["notified"] = new_count
     result["logs"].append(f"🎉 通知完成！发送 {new_count} 条通知")
