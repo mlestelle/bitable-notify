@@ -321,10 +321,21 @@ def main():
         # 检查阶段推进建议（方案 B）
         advance_hint = check_stage_advance(records, parent_id, parent_stage)
 
-        # 先标记「已通知」
-        requests.put(
-            f"{BASE_URL}/bitable/v1/apps/{APP_TOKEN}/tables/{TABLE_ID}/records/{rid}",
-            json={"fields": {"已通知": "是"}}, headers=hd)
+        # 先标记「已通知」，必须成功才发通知
+        mark_ok = False
+        for attempt in range(3):
+            mark_resp = requests.put(
+                f"{BASE_URL}/bitable/v1/apps/{APP_TOKEN}/tables/{TABLE_ID}/records/{rid}",
+                json={"fields": {"已通知": "是"}}, headers=hd)
+            if mark_resp.json().get("code") == 0:
+                mark_ok = True
+                break
+            time.sleep(0.5)
+
+        if not mark_ok:
+            result["logs"].append(f"   ⚠️ {task_name} → 标记「已通知」失败，跳过（防止重复通知）")
+            continue
+
         time.sleep(0.3)
 
         if send_dingtalk(task_name, role, owner, parent_name, parent_stage,
