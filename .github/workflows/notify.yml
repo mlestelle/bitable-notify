@@ -1,10 +1,9 @@
 name: Bitable 任务通知
 
 on:
-  schedule:
-    # 工作日 9:00-18:00 (UTC+8) 每30分钟运行一次
-    # UTC 时间 1:00-10:00 = 北京时间 9:00-18:00
-    - cron: '*/30 1-10 * * 1-5'
+  # schedule 暂时关闭，修复「已通知」字段后再开启
+  # schedule:
+  #   - cron: '*/30 1-10 * * 1-5'
   workflow_dispatch:
 
 jobs:
