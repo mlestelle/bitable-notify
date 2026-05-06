@@ -26,8 +26,22 @@ TABLE_ID = os.environ.get("BITABLE_TABLE_ID")
 
 BASE_URL = "https://open.feishu.cn/open-apis"
 
-# ===== 团队成员：姓名 → 手机号（从环境变量读取 JSON） =====
-NAME_TO_PHONE = json.loads(os.environ.get("NAME_PHONE_MAP", "{}"))
+# ===== 团队成员：姓名 → 手机号 =====
+# 优先从环境变量读取，未设置时使用内置映射
+_DEFAULT_PHONE_MAP = {
+    "陈忠强": "15908118897",
+    "贺敏洪": "13700951014",
+    "张凯悦": "15328230564",
+    "李睿": "18382025882",
+    "韩雷": "18980753038",
+    "卢鸿泽": "15284770530",
+    "文媛萌": "19981590240",
+    "丁加州": "13684097528",
+    "艾涛胜": "18482365438",
+    "张晓函": "13971607982",
+}
+_env_map = os.environ.get("NAME_PHONE_MAP", "")
+NAME_TO_PHONE = json.loads(_env_map) if _env_map else _DEFAULT_PHONE_MAP
 
 # ===== 通知矩阵：(岗位类型, 父任务当前阶段) → 通知配置 =====
 # key = (岗位类型, 当前阶段)
