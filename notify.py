@@ -75,8 +75,8 @@ STAGE_ADVANCE = {
     "待上线":   "已上线",
 }
 
-# 父子任务字段同步列表（不含「当前阶段」，它只属于父任务）
-SYNC_FIELDS = ["所属迭代", "优先级", "任务类型"]
+# 父子任务字段同步列表（含「当前阶段」，用于归档筛选：父任务已上线时子任务也自动归档）
+SYNC_FIELDS = ["当前阶段", "所属迭代", "优先级", "任务类型"]
 
 
 # ============================================================
@@ -136,11 +136,14 @@ def find_people_by_roles(records, parent_id, target_roles):
         if pid != parent_id:
             continue
         role = fields.get("岗位类型", "")
-        name = fields.get("负责人", "")
-        if role in target_roles and name and name not in seen:
-            seen.add(name)
-            phone = NAME_TO_PHONE.get(name, "")
-            people.append((name, phone))
+        raw_name = fields.get("负责人", "")
+        if role in target_roles and raw_name:
+            # 支持逗号分隔的多人负责人（如 "张凯悦，李睿"）
+            for name in [n.strip() for n in raw_name.replace("，", ",").split(",")]:
+                if name and name not in seen:
+                    seen.add(name)
+                    phone = NAME_TO_PHONE.get(name, "")
+                    people.append((name, phone))
     return people
 
 
@@ -191,12 +194,14 @@ def send_dingtalk(task_name, role, owner, parent_name, parent_stage, message, pe
     if not DINGTALK_WEBHOOK_URL:
         return False
 
-    # 构造 @人文本
+    # 构造 @人文本（有手机号的 @手机号强提醒，没有的也显示姓名）
     at_mobiles = [p[1] for p in people if p[1]]
     at_text = ""
     if people:
-        at_names = " ".join([f"{p[0]} @{p[1]}" for p in people if p[1]])
-        at_text = f"\n- **📢 请跟进**：{at_names}"
+        parts = []
+        for name, phone in people:
+            parts.append(f"{name} @{phone}" if phone else name)
+        at_text = f"\n- **📢 请跟进**：{' '.join(parts)}"
 
     # 阶段推进建议
     advance_text = ""
@@ -321,12 +326,16 @@ def main():
         # 检查阶段推进建议（方案 B）
         advance_hint = check_stage_advance(records, parent_id, parent_stage)
 
-        # 先标记「已通知」，必须成功才发通知
+        # 先标记「已通知」+ 记录「任务完成时间」，必须成功才发通知
         mark_ok = False
+        mark_fields = {"已通知": "是"}
+        if not fields.get("任务完成时间"):
+            mark_fields["任务完成时间"] = int(datetime.now(BJT).replace(
+                hour=0, minute=0, second=0, microsecond=0).timestamp() * 1000)
         for attempt in range(3):
             mark_resp = requests.put(
                 f"{BASE_URL}/bitable/v1/apps/{APP_TOKEN}/tables/{TABLE_ID}/records/{rid}",
-                json={"fields": {"已通知": "是"}}, headers=hd)
+                json={"fields": mark_fields}, headers=hd)
             if mark_resp.json().get("code") == 0:
                 mark_ok = True
                 break
@@ -356,28 +365,49 @@ def main():
     result["notified"] = new_count
     result["logs"].append(f"🎉 通知完成！发送 {new_count} 条通知")
 
-    # === 3. 更新超期状态 ===
+    # === 3. 更新超期天数 + 任务完成时间 ===
+    # 「是否超期」是公式字段，会根据「超期天数」和「执行状态」自动计算
     today_start = datetime.now(BJT).replace(hour=0, minute=0, second=0, microsecond=0)
     today_ms = today_start.timestamp() * 1000
+    one_day_ms = 86400 * 1000
     overdue_count = 0
+
     for r in records:
         fields = r.get("fields", {})
         status = fields.get("执行状态", "")
-        end_date = fields.get("计划结束")
-        old_val = fields.get("超期状态", "")
+        end_date = fields.get("计划结束")  # 毫秒时间戳
+        finish_time = fields.get("任务完成时间")  # 毫秒时间戳
+        old_overdue_days = fields.get("超期天数")
+
+        updates = {}
 
         if status == "已完成":
-            new_val = "✅ 已完成"
-        elif end_date and isinstance(end_date, (int, float)) and end_date < today_ms:
-            new_val = "⚠️ 超期"
-            overdue_count += 1
-        else:
-            new_val = "正常"
+            # 没有完成时间的历史任务，不补填、不计算，等手动补填
+            if not finish_time:
+                continue
 
-        if new_val != old_val:
+            # 有完成时间：计算超期天数 = 完成时间 - 计划结束（正数=超期，负数=提前）
+            if end_date and isinstance(end_date, (int, float)):
+                overdue_days = round((finish_time - end_date) / one_day_ms)
+                if old_overdue_days != overdue_days:
+                    updates["超期天数"] = overdue_days
+                if overdue_days > 0:
+                    overdue_count += 1
+        elif end_date and isinstance(end_date, (int, float)) and end_date < today_ms:
+            # 未完成 + 已过截止日
+            overdue_days = round((today_ms - end_date) / one_day_ms)
+            overdue_count += 1
+            if old_overdue_days != overdue_days:
+                updates["超期天数"] = overdue_days
+        else:
+            # 正常：如果之前有超期天数，清零
+            if old_overdue_days and old_overdue_days != 0:
+                updates["超期天数"] = 0
+
+        if updates:
             requests.put(
                 f"{BASE_URL}/bitable/v1/apps/{APP_TOKEN}/tables/{TABLE_ID}/records/{r['record_id']}",
-                json={"fields": {"超期状态": new_val}}, headers=hd)
+                json={"fields": updates}, headers=hd)
             time.sleep(0.1)
 
     result["overdue"] = overdue_count
